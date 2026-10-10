@@ -9,5 +9,10 @@ persistence:
     username: !ENV ${POSTGRES_USER:}
     password: !ENV ${POSTGRES_PASSWORD:}
     database: !ENV ${POSTGRES_DB:}
+    ssl_mode: !ENV ${POSTGRES_SSL_MODE:disable}
+    pool_mode: !ENV ${POSTGRES_POOL_MODE:queue}
+    credentials_json: !ENV ${POSTGRES_CREDENTIALS_JSON:}
+cors:
+  allowed_origins: !ENV ${CORS_ALLOWED_ORIGINS:}
 logging:
   level: !ENV ${LOG_LEVEL:INFO}

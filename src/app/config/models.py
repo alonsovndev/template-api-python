@@ -1,6 +1,15 @@
-from typing import Literal, Self
+import json
+import re
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    SecretStr,
+    model_validator,
+)
 
 Environment = Literal["local", "dev", "test", "container", "prod"]
 
@@ -20,6 +29,29 @@ class PostgreSQLSettings(ConfigurationModel):
     username: str = ""
     password: SecretStr = SecretStr("")
     database: str = ""
+    ssl_mode: Literal["disable", "require"] = "disable"
+    pool_mode: Literal["queue", "null"] = "queue"
+
+    @model_validator(mode="before")
+    @classmethod
+    def read_credentials_json(cls, data: Any) -> Any:
+        """Accept the {"username", "password"} JSON that AWS Secrets Manager stores for RDS."""
+        if not isinstance(data, dict) or "credentials_json" not in data:
+            return data
+        values = {name: value for name, value in data.items() if name != "credentials_json"}
+        raw_credentials = str(data["credentials_json"] or "").strip()
+        if not raw_credentials:
+            return values
+        try:
+            credentials = json.loads(raw_credentials)
+        except ValueError:
+            raise ValueError("credentials_json must be valid JSON") from None
+        if not isinstance(credentials, dict) or not all(
+            isinstance(credentials.get(name), str) and credentials[name]
+            for name in ("username", "password")
+        ):
+            raise ValueError("credentials_json must contain a username and a password")
+        return {**values, "username": credentials["username"], "password": credentials["password"]}
 
 
 class PersistenceSettings(ConfigurationModel):
@@ -40,6 +72,25 @@ class PersistenceSettings(ConfigurationModel):
         return self
 
 
+_ORIGIN = re.compile(r"^https?://[^/\s?#]+$")
+
+
+def _split_origins(value: Any) -> Any:
+    if isinstance(value, str):
+        return tuple(origin.strip() for origin in value.split(",") if origin.strip())
+    return value
+
+
+class CorsSettings(ConfigurationModel):
+    allowed_origins: Annotated[tuple[str, ...], BeforeValidator(_split_origins)] = ()
+
+    @model_validator(mode="after")
+    def require_explicit_origins(self) -> Self:
+        if not all(_ORIGIN.match(origin) for origin in self.allowed_origins):
+            raise ValueError("CORS origins must look like https://host[:port], without a path")
+        return self
+
+
 class LoggingSettings(ConfigurationModel):
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
 
@@ -48,4 +99,5 @@ class Settings(ConfigurationModel):
     environment: Environment = "local"
     app: ApplicationSettings = ApplicationSettings()
     persistence: PersistenceSettings = PersistenceSettings()
+    cors: CorsSettings = CorsSettings()
     logging: LoggingSettings = LoggingSettings()
