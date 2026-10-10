@@ -5,7 +5,7 @@ from sqlalchemy import Connection, MetaData, pool
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.config import ConfigurationError, load_settings
-from app.shared.infrastructure.database import Base, database_url
+from app.shared.infrastructure.database import Base, connection_arguments, database_url
 
 configuration = context.config
 target_metadata: MetaData = configuration.attributes.get("target_metadata", Base.metadata)
@@ -22,7 +22,10 @@ async def run_online_migrations() -> None:
     if settings.persistence.driver != "postgresql":
         raise ConfigurationError("Alembic requires PERSISTENCE_DRIVER=postgresql")
     engine = create_async_engine(
-        database_url(settings.persistence.postgres), poolclass=pool.NullPool, hide_parameters=True
+        database_url(settings.persistence.postgres),
+        poolclass=pool.NullPool,
+        hide_parameters=True,
+        connect_args=connection_arguments(settings.persistence.postgres),
     )
     try:
         async with engine.connect() as connection:

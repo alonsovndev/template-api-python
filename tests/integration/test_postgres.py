@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from app.config import Settings
 from app.config.models import PersistenceSettings
 from app.main import create_app
+from app.shared.infrastructure.database import create_database_engine
 from tests.support.items.domain.item import Item
 from tests.support.items.infrastructure.postgres_repository import PostgreSQLItemRepository
 from tests.support.postgres import test_connection_settings as connection_settings
@@ -64,3 +65,14 @@ def test_postgresql_api_readiness_with_real_configuration() -> None:
         response = client.get("/health/ready")
         assert response.status_code == 200
         assert response.json() == {"status": "ready"}
+
+
+async def test_pooler_mode_connects_and_repeats_statements() -> None:
+    settings = connection_settings().model_copy(update={"pool_mode": "null"})
+    engine = create_database_engine(settings)
+    try:
+        for _ in range(3):
+            async with engine.connect() as connection:
+                assert (await connection.execute(text("SELECT 1"))).scalar_one() == 1
+    finally:
+        await engine.dispose()

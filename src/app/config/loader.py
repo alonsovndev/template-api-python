@@ -1,6 +1,6 @@
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, get_args
@@ -10,7 +10,9 @@ from dotenv import dotenv_values
 from pydantic import ValidationError
 
 from app.config.models import Environment, Settings
+from app.config.secrets import read_secret_string
 
+_PROFILES_WITH_CREDENTIALS = {"dev", "container", "prod"}
 _ENVIRONMENT_VARIABLE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::([^}]*))?\}")
 
 
@@ -50,6 +52,7 @@ def _parse_yaml(content: str, environment: Mapping[str, str]) -> Any:
 def load_settings(
     paths: ConfigurationPaths | None = None,
     environ: Mapping[str, str] | None = None,
+    secret_reader: Callable[[str], str] = read_secret_string,
 ) -> Settings:
     paths = paths or ConfigurationPaths()
     process_environment = dict(os.environ if environ is None else environ)
@@ -70,6 +73,23 @@ def load_settings(
         raise ConfigurationError("APP_ENV must be local, dev, test, container, or prod")
     if profile == "prod":
         environment = process_environment
+
+    secret_arn = environment.get("POSTGRES_CREDENTIALS_SECRET_ARN", "").strip()
+    uses_credentials = (
+        profile in _PROFILES_WITH_CREDENTIALS
+        and environment.get("PERSISTENCE_DRIVER", "postgresql").strip().lower() != "memory"
+    )
+    if (
+        secret_arn
+        and uses_credentials
+        and not environment.get("POSTGRES_CREDENTIALS_JSON", "").strip()
+    ):
+        try:
+            environment = {**environment, "POSTGRES_CREDENTIALS_JSON": secret_reader(secret_arn)}
+        except Exception as error:
+            raise ConfigurationError(
+                f"Could not read the database credentials secret ({type(error).__name__})"
+            ) from None
 
     try:
         content = (paths.config_directory / f"config_{profile}.yml").read_text(encoding="utf-8")

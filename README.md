@@ -44,6 +44,16 @@ Tagged YAML scalars support `!ENV ${VARIABLE}` and `!ENV ${VARIABLE:default}`, i
 
 Set `PERSISTENCE_DRIVER=postgresql` to use PostgreSQL. Supply `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB`. The password has no usable default. Production also requires explicit host, user, and database values. For memory mode, database credentials are not required. Set `APP_NAME` and `LOG_LEVEL` to override application metadata and logging.
 
+Optional settings for managed databases and browsers (defaults keep the previous behavior):
+
+| Variable | Values | Use |
+|---|---|---|
+| `POSTGRES_SSL_MODE` | `disable` (default), `require` | `require` encrypts the connection for RDS and Supabase without verifying the server certificate (verification is TBD). `disable` sends no SSL setting, so asyncpg's default (`prefer`) still negotiates TLS when the server offers it. |
+| `POSTGRES_POOL_MODE` | `queue` (default), `null` | `null` disables SQLAlchemy pooling and asyncpg prepared-statement reuse. Use it behind a transaction-mode pooler (Supabase pooler, PgBouncer) and on AWS Lambda. |
+| `POSTGRES_CREDENTIALS_JSON` | `{"username":"...","password":"..."}` | Sets the user and password from one JSON value, the format of an RDS-managed secret. ECS injects it from Secrets Manager. Overrides `POSTGRES_USER` and `POSTGRES_PASSWORD`; available in the `dev`, `container`, and `prod` profiles. |
+| `POSTGRES_CREDENTIALS_SECRET_ARN` | Secrets Manager secret ARN | Reads the credentials JSON above from AWS at startup, so no password is stored in the environment. Needs the `aws` extra (`pip install '.[aws]'`) and `secretsmanager:GetSecretValue` on the secret. Ignored when `POSTGRES_CREDENTIALS_JSON` is set. Failures stop startup and report only the error type. The secret is read once at startup, so after a rotation restart the service. Ignored outside the `dev`, `container`, and `prod` profiles or with `PERSISTENCE_DRIVER=memory`. |
+| `CORS_ALLOWED_ORIGINS` | Comma-separated origins | Empty disables CORS. Origins must look like `https://host[:port]` with no path or trailing slash; `*` is rejected. Only the `Authorization` and `Content-Type` headers are allowed and credentials are not. |
+
 Never commit `.env` or print settings with unredacted secrets. `.env.example` contains variable names and no usable credentials.
 
 ## Docker
@@ -64,6 +74,17 @@ docker run --rm -p 8080:8080 -e APP_ENV=container -e PERSISTENCE_DRIVER=memory t
 ```
 
 The image runs as non-root UID 999. Configuration YAML is packaged with the application; host `.env`, virtual environments, and test fixtures are excluded from the image. Image tags and dependency bounds are a starter baseline; release builds should lock their resolved dependencies and image digest.
+
+## Deployment targets
+
+| Target | Build | Notes |
+|---|---|---|
+| Container (ECS, local) | `docker build .` | Default image. Use `/health` for load balancer checks and `/health/ready` for container checks. |
+| AWS Lambda | `docker build --target lambda .` | Adds the [AWS Lambda Web Adapter](https://github.com/awslabs/aws-lambda-web-adapter) extension with port 8080 and `/health/ready` as the readiness path. Push to a private ECR repository (the shared `docker-push` workflow accepts `target: lambda`) and deploy by digest. Set `POSTGRES_POOL_MODE=null` and `POSTGRES_CREDENTIALS_SECRET_ARN`. |
+
+Building the `lambda` target pulls the adapter layer from `public.ecr.aws`. The adapter runs only inside Lambda, so a local `docker run` of that image tests the application, not the adapter.
+
+Run migrations as a separate, one-off step with the same image (`alembic upgrade head`), never at startup. Behind a transaction-mode pooler, point migrations at the direct database connection or the session pooler.
 
 ## Migrations
 
