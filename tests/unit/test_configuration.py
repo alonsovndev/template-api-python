@@ -155,3 +155,122 @@ def test_independent_loads_do_not_leak_values(tmp_path: Path) -> None:
     second = load_settings(paths_for(tmp_path), {"APP_NAME": "second"})
     assert first.app.name == "first"
     assert second.app.name == "second"
+
+
+def test_credentials_json_supplies_the_database_user_and_password(tmp_path: Path) -> None:
+    settings = load_settings(
+        paths_for(tmp_path),
+        {
+            "APP_ENV": "prod",
+            "POSTGRES_HOST": "db.example.test",
+            "POSTGRES_DB": "app",
+            "POSTGRES_CREDENTIALS_JSON": '{"username": "master", "password": "<test-password>"}',
+        },
+    )
+    postgres = settings.persistence.postgres
+    assert postgres.username == "master"
+    assert postgres.password.get_secret_value() == "<test-password>"
+
+
+@pytest.mark.parametrize(
+    "credentials", ["not json", "[]", '{"username": "master"}', '{"password": 1}']
+)
+def test_invalid_credentials_json_fails_without_echoing_the_value(
+    tmp_path: Path, credentials: str
+) -> None:
+    with pytest.raises(ConfigurationError) as error:
+        load_settings(
+            paths_for(tmp_path),
+            {
+                "APP_ENV": "prod",
+                "POSTGRES_HOST": "db.example.test",
+                "POSTGRES_DB": "app",
+                "POSTGRES_CREDENTIALS_JSON": credentials,
+            },
+        )
+    assert "persistence.postgres" in str(error.value)
+    assert credentials not in str(error.value)
+
+
+SECRET_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:app-database-AbCdEf"
+SECRET_JSON = '{"username": "app", "password": "<test-password>"}'
+
+
+def test_credentials_are_read_from_the_secret_named_by_arn(tmp_path: Path) -> None:
+    requested: list[str] = []
+
+    def read_secret(secret_arn: str) -> str:
+        requested.append(secret_arn)
+        return SECRET_JSON
+
+    settings = load_settings(
+        paths_for(tmp_path),
+        {
+            "APP_ENV": "prod",
+            "POSTGRES_HOST": "db.example.test",
+            "POSTGRES_DB": "app",
+            "POSTGRES_CREDENTIALS_SECRET_ARN": SECRET_ARN,
+        },
+        read_secret,
+    )
+    assert requested == [SECRET_ARN]
+    assert settings.persistence.postgres.username == "app"
+    assert settings.persistence.postgres.password.get_secret_value() == "<test-password>"
+
+
+def test_explicit_credentials_json_skips_the_secret_lookup(tmp_path: Path) -> None:
+    def read_secret(secret_arn: str) -> str:
+        raise AssertionError("The secret must not be read")
+
+    settings = load_settings(
+        paths_for(tmp_path),
+        {
+            "APP_ENV": "prod",
+            "POSTGRES_HOST": "db.example.test",
+            "POSTGRES_DB": "app",
+            "POSTGRES_CREDENTIALS_JSON": SECRET_JSON,
+            "POSTGRES_CREDENTIALS_SECRET_ARN": SECRET_ARN,
+        },
+        read_secret,
+    )
+    assert settings.persistence.postgres.username == "app"
+
+
+def test_secret_lookup_failure_stops_startup_without_details(tmp_path: Path) -> None:
+    def read_secret(secret_arn: str) -> str:
+        raise RuntimeError(f"denied for {secret_arn} with <sensitive-detail>")
+
+    with pytest.raises(ConfigurationError) as error:
+        load_settings(
+            paths_for(tmp_path),
+            {
+                "APP_ENV": "prod",
+                "POSTGRES_HOST": "db.example.test",
+                "POSTGRES_DB": "app",
+                "POSTGRES_CREDENTIALS_SECRET_ARN": SECRET_ARN,
+            },
+            read_secret,
+        )
+    assert "credentials secret (RuntimeError)" in str(error.value)
+    assert "<sensitive-detail>" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [
+        {"APP_ENV": "local"},
+        {"APP_ENV": "test"},
+        {"APP_ENV": "prod", "PERSISTENCE_DRIVER": "memory"},
+    ],
+)
+def test_secret_is_not_read_when_credentials_are_unused(
+    tmp_path: Path, environment: dict[str, str]
+) -> None:
+    def read_secret(secret_arn: str) -> str:
+        raise AssertionError("The secret must not be read")
+
+    load_settings(
+        paths_for(tmp_path),
+        {"POSTGRES_CREDENTIALS_SECRET_ARN": SECRET_ARN, **environment},
+        read_secret,
+    )
