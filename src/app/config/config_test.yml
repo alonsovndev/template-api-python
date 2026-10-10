@@ -1,0 +1,13 @@
+app:
+  name: !ENV ${APP_NAME:template-api-python}
+  version: "0.1.0"
+persistence:
+  driver: !ENV ${PERSISTENCE_DRIVER:memory}
+  postgres:
+    host: !ENV ${POSTGRES_HOST:localhost}
+    port: !ENV ${POSTGRES_PORT:5432}
+    username: !ENV ${POSTGRES_USER:app}
+    password: !ENV ${POSTGRES_PASSWORD:}
+    database: !ENV ${POSTGRES_DB:app}
+logging:
+  level: !ENV ${LOG_LEVEL:INFO}
